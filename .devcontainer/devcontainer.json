@@ -5,7 +5,7 @@
 		"context": ".."
 	},
 	"forwardPorts": [5000],
-	"postCreateCommand": "pip install -r requirements.txt && ollama pull gemma:2b",
+	"postCreateCommand": "pip install -r requirements.txt && ollama pull phi3",
 	"customizations": {
 		"vscode": {
 			"extensions": [
