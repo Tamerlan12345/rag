@@ -18,7 +18,7 @@ def index():
         
         # --- Прямое общение с моделью ---
         # 1. Определяем модель
-        llm = ChatOllama(model="tinyllama")
+        llm = ChatOllama(model="phi3")
 
         # 2. Отправляем запрос и получаем ответ
         answer = llm.invoke(question).content
