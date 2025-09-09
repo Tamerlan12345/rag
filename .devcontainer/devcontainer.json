@@ -1,11 +1,15 @@
 // .devcontainer/devcontainer.json
+
 {
 	"name": "Python 3 RAG App",
 	"build": {
-		"dockerfile": "Dockerfile"
+		"dockerfile": "Dockerfile",
+		"context": ".." 
 	},
+	// Перенаправляем порт 5000, на котором будет работать наше Flask-приложение
 	"forwardPorts": [5000],
-
+	// Команда, которая выполнится ОДИН РАЗ после создания Codespace.
+	// Она установит все Python-библиотеки и скачает модель Llama 3.
 	"postCreateCommand": "pip install -r requirements.txt && ollama pull llama3",
 	"customizations": {
 		"vscode": {
