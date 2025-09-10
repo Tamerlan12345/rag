@@ -1,12 +1,10 @@
 import os
 from flask import Flask, request, render_template, session, redirect, url_for
-from tqdm import tqdm 
+from tqdm import tqdm
 
-
+# Импортируем ChatOllama для ИИ и HuggingFaceEmbeddings для эмбеддингов
 from langchain_ollama import ChatOllama
-
 from langchain_community.embeddings import HuggingFaceEmbeddings
-
 
 from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
@@ -22,14 +20,14 @@ DOCUMENTS_FOLDER = 'documents'
 VECTOR_STORE_PATH = 'vector_store'
 os.makedirs(DOCUMENTS_FOLDER, exist_ok=True)
 
+# --- Инициализация моделей ---
+# 1. Основная модель для чата через Ollama
+llm = ChatOllama(model="qwen2:1.5b")
 
-# Основная модель для чата (остаётся без изменений)
-llm = ChatOllama(model="phi3")
-
-
+# 2. Быстрая локальная модель для эмбеддингов через Hugging Face
 print("Инициализация быстрой модели для эмбеддингов...")
 embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
-
+# ----------------------------------------------------
 
 vector_store = None
 
@@ -44,7 +42,6 @@ def build_vector_store():
     print("Создание новой векторной базы из папки 'documents'...")
     documents = []
     
-
     file_list = os.listdir(DOCUMENTS_FOLDER)
     for filename in tqdm(file_list, desc="Чтение документов"):
         filepath = os.path.join(DOCUMENTS_FOLDER, filename)
@@ -66,7 +63,7 @@ def build_vector_store():
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(documents)
     
-    print("Создание эмбеддингов и сохранение в базу (это может занять время)...")
+    print("Создание эмбеддингов и сохранение в базу...")
     vector_store = Chroma.from_documents(
         documents=splits, 
         embedding=embeddings, 
@@ -74,7 +71,6 @@ def build_vector_store():
     )
     print("Векторная база успешно создана и сохранена.")
 
-# Остальной код остаётся без изменений...
 @app.route('/', methods=['GET', 'POST'])
 def chat():
     # ... (код чата без изменений)
@@ -87,7 +83,7 @@ def chat():
         if not vector_store:
              ai_response = "База документов пуста. Пожалуйста, добавьте файлы в папку 'documents', удалите папку 'vector_store' и перезапустите приложение."
         else:
-            prompt_text = """Ты — ассистент, который отвечает на вопросы, используя ТОЛЬКО предоставленный ниже контекст.
+            prompt_text = """Ты — ассисент, который отвечает на вопросы, используя ТОЛЬКО предоставленный ниже контекст.
             - Твоя задача — найти ответ в тексте.
             - Если ответ найден, чётко изложи его своими словами на основе текста.
             - Если в контексте нет информации для ответа на вопрос, ты ОБЯЗАН ответить только фразой: "В предоставленных документах нет информации по этому вопросу."
