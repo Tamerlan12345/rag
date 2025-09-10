@@ -1,9 +1,7 @@
 import os
 from flask import Flask, request, render_template, session, redirect, url_for
-
+from langchain_ollama import ChatOllama, OllamaEmbeddings 
 from langchain_community.vectorstores import Chroma
-from langchain_community.chat_models import ChatOllama
-from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import create_retrieval_chain
@@ -11,7 +9,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 app = Flask(__name__)
-app.secret_key = 'nadopodumat'
+app.secret_key = 'your_very_secret_key_for_chat'
 
 DOCUMENTS_FOLDER = 'documents'
 VECTOR_STORE_PATH = 'vector_store'
@@ -69,7 +67,7 @@ def chat():
         if not vector_store:
             ai_response = "База документов пуста. Пожалуйста, добавьте файлы в папку 'documents' и перезапустите приложение."
         else:
-            prompt_text = """Ты — ассистент-методолог со стажем, который отвечает на вопросы, используя ТОЛЬКО предоставленный ниже контекст.
+            prompt_text = """Ты — ассистент, который отвечает на вопросы, используя ТОЛЬКО предоставленный ниже контекст.
             - Твоя задача — найти ответ в тексте.
             - Если ответ найден, чётко изложи его своими словами на основе текста.
             - Если в контексте нет информации для ответа на вопрос, ты ОБЯЗАН ответить только фразой: "В предоставленных документах нет информации по этому вопросу."
