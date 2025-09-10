@@ -2,7 +2,6 @@ import os
 from flask import Flask, request, render_template, session, redirect, url_for
 from tqdm import tqdm
 
-# Импортируем ChatOllama для ИИ и HuggingFaceEmbeddings для эмбеддингов
 from langchain_ollama import ChatOllama
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
@@ -14,20 +13,16 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 app = Flask(__name__)
-app.secret_key = 'your_very_secret_key_for_chat'
+app.secret_key = 'mega_secretka'
 
 DOCUMENTS_FOLDER = 'documents'
 VECTOR_STORE_PATH = 'vector_store'
 os.makedirs(DOCUMENTS_FOLDER, exist_ok=True)
 
-# --- Инициализация моделей ---
-# 1. Основная модель для чата через Ollama
 llm = ChatOllama(model="qwen2:1.5b")
 
-# 2. Быстрая локальная модель для эмбеддингов через Hugging Face
 print("Инициализация быстрой модели для эмбеддингов...")
 embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
-# ----------------------------------------------------
 
 vector_store = None
 
