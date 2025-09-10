@@ -1,8 +1,10 @@
 import os
 from flask import Flask, request, render_template, session, redirect, url_for
+from tqdm import tqdm
 
-# Используем современный импорт, чтобы убрать предупреждения
-from langchain_ollama import ChatOllama, OllamaEmbeddings 
+# Импортируем ChatOllama для ИИ и HuggingFaceEmbeddings для эмбеддингов
+from langchain_ollama import ChatOllama
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
@@ -19,9 +21,12 @@ VECTOR_STORE_PATH = 'vector_store'
 os.makedirs(DOCUMENTS_FOLDER, exist_ok=True)
 
 # --- Инициализация моделей ---
-# Обе задачи (чат и эмбеддинги) используют одну модель через Ollama, чтобы экономить память
+# 1. Основная модель для чата через Ollama
 llm = ChatOllama(model="qwen2:1.5b")
-embeddings = OllamaEmbeddings(model="qwen2:1.5b")
+
+# 2. Быстрая локальная модель для эмбеддингов через Hugging Face
+print("Инициализация быстрой модели для эмбеддингов...")
+embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
 # ----------------------------------------------------
 
 vector_store = None
@@ -34,11 +39,11 @@ def build_vector_store():
         vector_store = Chroma(persist_directory=VECTOR_STORE_PATH, embedding_function=embeddings)
         return
 
-    print("Создание новой векторной базы. Этот процесс может быть долгим...")
+    print("Создание новой векторной базы из папки 'documents'...")
     documents = []
     
     file_list = os.listdir(DOCUMENTS_FOLDER)
-    for filename in file_list:
+    for filename in tqdm(file_list, desc="Чтение документов"):
         filepath = os.path.join(DOCUMENTS_FOLDER, filename)
         try:
             if filename.endswith('.pdf'):
@@ -48,15 +53,17 @@ def build_vector_store():
                 loader = Docx2txtLoader(filepath)
                 documents.extend(loader.load())
         except Exception as e:
-            print(f"Не удалось прочитать файл {filename}: {e}")
+            print(f"\nНе удалось прочитать файл {filename}: {e}")
 
     if not documents:
         print("Документы для индексации не найдены.")
         return
 
+    print("Разбиение текста на фрагменты...")
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(documents)
     
+    print("Создание эмбеддингов и сохранение в базу...")
     vector_store = Chroma.from_documents(
         documents=splits, 
         embedding=embeddings, 
