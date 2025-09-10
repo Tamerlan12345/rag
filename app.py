@@ -1,58 +1,100 @@
 import os
-from flask import Flask, request, render_template, jsonify
+from flask import Flask, request, render_template, session, redirect, url_for
 
-# Импортируем только то, что нужно для прямого чата
+from langchain_community.vectorstores import Chroma
 from langchain_community.chat_models import ChatOllama
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
 
-# --- Инициализация Flask приложения ---
 app = Flask(__name__)
+app.secret_key = 'nadopodumat'
 
-# --- Инициализация модели ---
-# Мы создаем один экземпляр модели, чтобы не загружать ее при каждом запросе
-llm = ChatOllama(model="qwen2:1.5b")
+DOCUMENTS_FOLDER = 'documents'
+VECTOR_STORE_PATH = 'vector_store'
+os.makedirs(DOCUMENTS_FOLDER, exist_ok=True)
 
-# --- Главная страница для чата в браузере (остаётся как есть) ---
+llm = ChatOllama(model="phi3")
+embeddings = OllamaEmbeddings(model="phi3")
+
+vector_store = None
+
+def build_vector_store():
+    """
+    Сканирует папку 'documents', обрабатывает файлы и создает/загружает векторную базу.
+    """
+    global vector_store
+    
+    if os.path.exists(VECTOR_STORE_PATH):
+        print("Загрузка существующей векторной базы...")
+        vector_store = Chroma(persist_directory=VECTOR_STORE_PATH, embedding_function=embeddings)
+        return
+
+    print("Создание новой векторной базы...")
+    documents = []
+    for filename in os.listdir(DOCUMENTS_FOLDER):
+        filepath = os.path.join(DOCUMENTS_FOLDER, filename)
+        if filename.endswith('.pdf'):
+            loader = PyPDFLoader(filepath)
+            documents.extend(loader.load())
+        elif filename.endswith('.docx'):
+            loader = Docx2txtLoader(filepath)
+            documents.extend(loader.load())
+
+    if not documents:
+        print("Документы для индексации не найдены.")
+        return
+
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = text_splitter.split_documents(documents)
+    
+    vector_store = Chroma.from_documents(
+        documents=splits, 
+        embedding=embeddings, 
+        persist_directory=VECTOR_STORE_PATH
+    )
+    print("Векторная база успешно создана и сохранена.")
+
 @app.route('/', methods=['GET', 'POST'])
-def index():
-    answer = None
+def chat():
+    if 'history' not in session:
+        session['history'] = []
+
     if request.method == 'POST':
         question = request.form['question']
-        # Используем уже созданный экземпляр модели
-        answer = llm.invoke(question).content
-    return render_template('index.html', answer=answer)
+        
+        if not vector_store:
+            ai_response = "База документов пуста. Пожалуйста, добавьте файлы в папку 'documents' и перезапустите приложение."
+        else:
+            prompt_text = """Ты — ассистент-методолог со стажем, который отвечает на вопросы, используя ТОЛЬКО предоставленный ниже контекст.
+            - Твоя задача — найти ответ в тексте.
+            - Если ответ найден, чётко изложи его своими словами на основе текста.
+            - Если в контексте нет информации для ответа на вопрос, ты ОБЯЗАН ответить только фразой: "В предоставленных документах нет информации по этому вопросу."
+            - Не используй свои общие знания. Не придумывай ничего.
 
-# --- НОВЫЙ ЭНДПОИНТ ДЛЯ ВЕБХУКА ---
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    # Проверяем, что нам пришли данные в формате JSON
-    if not request.is_json:
-        return jsonify({"error": "Request must be JSON"}), 400
+            Контекст:
+            {context}
 
-    # Получаем JSON из тела запроса
-    data = request.get_json()
+            Вопрос: {input}
+            """
+            prompt = ChatPromptTemplate.from_template(prompt_text)
 
-    # Проверяем, есть ли в данных ключ "message"
-    if 'message' not in data:
-        return jsonify({"error": "Missing 'message' key in JSON payload"}), 400
+            retriever = vector_store.as_retriever()
+            document_chain = create_stuff_documents_chain(llm, prompt)
+            retrieval_chain = create_retrieval_chain(retriever, document_chain)
+            
+            response = retrieval_chain.invoke({"input": question})
+            ai_response = response["answer"]
 
-    # Получаем сообщение
-    user_message = data['message']
+        session['history'].append({'user': question, 'ai': ai_response})
+        session.modified = True
+        return redirect(url_for('chat'))
 
-    print(f"Получено сообщение через вебхук: {user_message}") # Логируем в терминал
+    return render_template('index.html', history=session['history'])
 
-    # --- Отправляем сообщение модели и получаем ответ ---
-    try:
-        # Используем уже созданный экземпляр модели
-        model_response = llm.invoke(user_message).content
-        print(f"Ответ модели: {model_response}") # Логируем ответ
-
-        # Возвращаем успешный ответ в формате JSON
-        return jsonify({"status": "success", "response": model_response})
-    
-    except Exception as e:
-        print(f"Ошибка при вызове модели: {e}")
-        return jsonify({"error": "Failed to get response from LLM"}), 500
-
-# --- Запуск приложения ---
 if __name__ == '__main__':
+    build_vector_store()
     app.run(host='0.0.0', port=5000, debug=True)
