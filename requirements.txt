@@ -6,3 +6,5 @@ chromadb
 pypdf
 docx2txt
 langchain-ollama
+sentence-transformers
+tqdm
