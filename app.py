@@ -1,6 +1,13 @@
 import os
 from flask import Flask, request, render_template, session, redirect, url_for
-from langchain_ollama import ChatOllama, OllamaEmbeddings 
+from tqdm import tqdm 
+
+
+from langchain_ollama import ChatOllama
+
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+
 from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -9,21 +16,24 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 app = Flask(__name__)
-app.secret_key = 'moi_key_mega_privat'
+app.secret_key = 'your_very_secret_key_for_chat'
 
 DOCUMENTS_FOLDER = 'documents'
 VECTOR_STORE_PATH = 'vector_store'
 os.makedirs(DOCUMENTS_FOLDER, exist_ok=True)
 
+
+# Основная модель для чата (остаётся без изменений)
 llm = ChatOllama(model="phi3")
-embeddings = OllamaEmbeddings(model="phi3")
+
+
+print("Инициализация быстрой модели для эмбеддингов...")
+embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
+
 
 vector_store = None
 
 def build_vector_store():
-    """
-    Сканирует папку 'documents', обрабатывает файлы и создает/загружает векторную базу.
-    """
     global vector_store
     
     if os.path.exists(VECTOR_STORE_PATH):
@@ -31,24 +41,32 @@ def build_vector_store():
         vector_store = Chroma(persist_directory=VECTOR_STORE_PATH, embedding_function=embeddings)
         return
 
-    print("Создание новой векторной базы...")
+    print("Создание новой векторной базы из папки 'documents'...")
     documents = []
-    for filename in os.listdir(DOCUMENTS_FOLDER):
+    
+
+    file_list = os.listdir(DOCUMENTS_FOLDER)
+    for filename in tqdm(file_list, desc="Чтение документов"):
         filepath = os.path.join(DOCUMENTS_FOLDER, filename)
-        if filename.endswith('.pdf'):
-            loader = PyPDFLoader(filepath)
-            documents.extend(loader.load())
-        elif filename.endswith('.docx'):
-            loader = Docx2txtLoader(filepath)
-            documents.extend(loader.load())
+        try:
+            if filename.endswith('.pdf'):
+                loader = PyPDFLoader(filepath)
+                documents.extend(loader.load())
+            elif filename.endswith('.docx'):
+                loader = Docx2txtLoader(filepath)
+                documents.extend(loader.load())
+        except Exception as e:
+            print(f"\nНе удалось прочитать файл {filename}: {e}")
 
     if not documents:
         print("Документы для индексации не найдены.")
         return
 
+    print("Разбиение текста на фрагменты...")
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(documents)
     
+    print("Создание эмбеддингов и сохранение в базу (это может занять время)...")
     vector_store = Chroma.from_documents(
         documents=splits, 
         embedding=embeddings, 
@@ -56,8 +74,10 @@ def build_vector_store():
     )
     print("Векторная база успешно создана и сохранена.")
 
+# Остальной код остаётся без изменений...
 @app.route('/', methods=['GET', 'POST'])
 def chat():
+    # ... (код чата без изменений)
     if 'history' not in session:
         session['history'] = []
 
@@ -65,7 +85,7 @@ def chat():
         question = request.form['question']
         
         if not vector_store:
-            ai_response = "База документов пуста. Пожалуйста, добавьте файлы в папку 'documents' и перезапустите приложение."
+             ai_response = "База документов пуста. Пожалуйста, добавьте файлы в папку 'documents', удалите папку 'vector_store' и перезапустите приложение."
         else:
             prompt_text = """Ты — ассистент, который отвечает на вопросы, используя ТОЛЬКО предоставленный ниже контекст.
             - Твоя задача — найти ответ в тексте.
