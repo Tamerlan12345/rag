@@ -9,7 +9,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 app = Flask(__name__)
-app.secret_key = 'your_very_secret_key_for_chat'
+app.secret_key = 'moi_key_mega_privat'
 
 DOCUMENTS_FOLDER = 'documents'
 VECTOR_STORE_PATH = 'vector_store'
