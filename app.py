@@ -11,14 +11,16 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 
 app = Flask(__name__)
-app.secret_key = 'two_chats_one_app_secret'
+app.secret_key = 'two_chats_one_app_secret_final_qwen2'
 
 DOCUMENTS_FOLDER = 'documents'
 VECTOR_STORE_SUMMARIES_PATH = 'vector_store_summaries'
 VECTOR_STORE_FULL_PATH = 'vector_store_full'
 os.makedirs(DOCUMENTS_FOLDER, exist_ok=True)
 
-llm = ChatOllama(model="phi3:mini", timeout=300)
+# ИЗМЕНЕНИЕ: Переключаемся на модель qwen2:1.5b
+llm = ChatOllama(model="qwen2:1.5b", timeout=300)
+
 print("Инициализация модели для эмбеддингов...")
 embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
 
@@ -27,7 +29,6 @@ full_vector_store = None
 
 def build_vector_stores():
     global summary_vector_store, full_vector_store
-    # ... (код build_vector_stores остается без изменений, я его скрыл для краткости)
     if os.path.exists(VECTOR_STORE_SUMMARIES_PATH) and os.path.exists(VECTOR_STORE_FULL_PATH):
         print("Загрузка существующих векторных баз...")
         summary_vector_store = Chroma(persist_directory=VECTOR_STORE_SUMMARIES_PATH, embedding_function=embeddings)
@@ -59,27 +60,18 @@ def build_vector_stores():
         print("Создание векторной базы для полного текста..."); full_vector_store = Chroma.from_documents(documents=full_docs_splits, embedding=embeddings, persist_directory=VECTOR_STORE_FULL_PATH)
     print("Векторные базы успешно созданы и готовы к работе.")
 
-
-# --- МАРШРУТЫ ДЛЯ RAG АГЕНТА ---
-
 @app.route('/')
 def rag_chat_page():
     if 'rag_history' not in session:
         session['rag_history'], session['rag_state'] = [], 'INITIAL'
-    return render_template('index.html', 
-                           history=session['rag_history'], 
-                           title="Интерактивный RAG Агент", 
-                           api_url=url_for('ask_rag'))
+    return render_template('index.html', history=session['rag_history'], title="Интерактивный RAG Агент", api_url=url_for('ask_rag'))
 
 @app.route('/ask_rag', methods=['POST'])
 def ask_rag():
-    # ... (весь сложный трехэтапный код ask из предыдущего ответа) ...
-    # Я немного переименовал переменные сессии, чтобы они не пересекались
     user_input = request.json.get('question')
     session['rag_history'].append({'user': user_input, 'time': request.json.get('time')})
     state = session.get('rag_state', 'INITIAL')
     ai_response = "Произошла непредвиденная ошибка. Состояние сброшено."
-
     def reset_state():
         session['rag_state'] = 'INITIAL'
         session.pop('rag_found_docs', None); session.pop('rag_original_question', None); session.pop('rag_relevant_chunks', None); session.pop('rag_selected_doc_name', None)
@@ -155,33 +147,22 @@ def ask_rag():
     session.modified = True
     return jsonify({'answer': ai_response})
 
-
-# --- МАРШРУТЫ ДЛЯ ОБЩЕГО АССИСТЕНТА ---
-
 @app.route('/general')
 def general_chat_page():
     if 'general_history' not in session:
         session['general_history'] = []
-    return render_template('index.html', 
-                           history=session['general_history'], 
-                           title="Общий AI Ассистент", 
-                           api_url=url_for('ask_general'))
+    return render_template('index.html', history=session['general_history'], title="Общий AI Ассистент", api_url=url_for('ask_general'))
 
 @app.route('/ask_general', methods=['POST'])
 def ask_general():
     user_input = request.json.get('question')
     time = request.json.get('time')
     session.setdefault('general_history', []).append({'user': user_input, 'time': time})
-    
-    # Просто отправляем запрос в модель
-    response = llm.invoke(user_input)
-    
-    session['general_history'].append({'ai': response, 'time': time})
+    response_obj = llm.invoke(user_input)
+    ai_text_response = response_obj.content
+    session['general_history'].append({'ai': ai_text_response, 'time': time})
     session.modified = True
-    return jsonify({'answer': response})
-
-
-# --- ОБЩИЕ МАРШРУТЫ ---
+    return jsonify({'answer': ai_text_response})
 
 @app.route('/download/<path:filename>')
 def download_file(filename):
@@ -189,15 +170,13 @@ def download_file(filename):
 
 @app.route('/reset')
 def reset():
-    # Сбрасываем сессию для обоих чатов
-    session.pop('rag_history', None)
-    session.pop('rag_state', None)
-    session.pop('general_history', None)
-    # Определяем, на какую страницу вернуть пользователя
     referrer = request.referrer
     if referrer and 'general' in referrer:
+        session.pop('general_history', None)
         return redirect(url_for('general_chat_page'))
-    return redirect(url_for('rag_chat_page'))
+    else:
+        session.pop('rag_history', None); session.pop('rag_state', None); session.pop('rag_found_docs', None); session.pop('rag_original_question', None); session.pop('rag_relevant_chunks', None); session.pop('rag_selected_doc_name', None)
+        return redirect(url_for('rag_chat_page'))
 
 if __name__ == '__main__':
     build_vector_stores()
