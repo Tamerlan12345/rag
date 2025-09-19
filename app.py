@@ -19,9 +19,11 @@ DOCUMENTS_FOLDER = 'documents'
 VECTOR_STORE_PATH = 'vector_store'
 os.makedirs(DOCUMENTS_FOLDER, exist_ok=True)
 
-llm = ChatOllama(model="qwen2:1.5b")
+# Используем быструю и качественную модель, оптимизированную для вашего оборудования
+llm = ChatOllama(model="mistral:7b-instruct-q4_K_M")
 
 print("Инициализация быстрой модели для эмбеддингов...")
+# Эта модель отлично подходит для русского и других языков
 embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
 
 vector_store = None
@@ -44,7 +46,7 @@ def build_vector_store():
             if filename.endswith('.pdf'):
                 loader = PyPDFLoader(filepath)
                 documents.extend(loader.load())
-            elif filename.endswith('.docx'):
+            elif filename.endswith('.docx') or filename.endswith('.doc'):
                 loader = Docx2txtLoader(filepath)
                 documents.extend(loader.load())
         except Exception as e:
