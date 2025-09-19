@@ -12,9 +12,9 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 app = Flask(__name__)
-app.secret_key = 'super_smart_rag_secret_final'
+app.secret_key = 'super_smart_rag_secret_fixed'
 
-# Оставляем оригинальную папку для документов
+# Структура папок остается прежней
 DOCUMENTS_FOLDER = 'documents'
 VECTOR_STORE_SUMMARIES_PATH = 'vector_store_summaries'
 VECTOR_STORE_FULL_PATH = 'vector_store_full'
@@ -38,26 +38,62 @@ def build_vector_stores():
         print("Создание новых векторных баз...")
         summaries, full_docs_splits = [], []
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        for filename in tqdm(os.listdir(DOCUMENTS_FOLDER), desc="Обработка документов"):
+        
+        file_list = os.listdir(DOCUMENTS_FOLDER)
+        for filename in tqdm(file_list, desc="Обработка документов"):
             filepath = os.path.join(DOCUMENTS_FOLDER, filename)
             try:
-                if filename.endswith('.pdf'): loader = PyPDFLoader(filepath)
-                elif filename.endswith('.docx') or filename.endswith('.doc'): loader = Docx2txtLoader(filepath)
-                else: continue
+                if filename.endswith('.pdf'):
+                    loader = PyPDFLoader(filepath)
+                elif filename.endswith('.docx'):
+                    loader = Docx2txtLoader(filepath)
+                # Пропускаем старые .doc файлы и другие неподдерживаемые форматы
+                else:
+                    print(f"\nПропускаем неподдерживаемый файл: {filename}")
+                    continue
+                
                 docs = loader.load()
-                summary_doc = docs[0].copy(); summary_doc.page_content = f"Название документа: {filename}"; summary_doc.metadata = {"source": filename}; summaries.append(summary_doc)
+                if not docs:
+                    print(f"\nНе удалось извлечь текст из файла: {filename}")
+                    continue
+
+                # ИСПРАВЛЕНО: Используем model_copy() вместо copy()
+                summary_doc = docs[0].model_copy()
+                summary_doc.page_content = f"Название документа: {filename}"
+                summary_doc.metadata = {"source": filename}
+                summaries.append(summary_doc)
+
                 splits = text_splitter.split_documents(docs)
-                for split in splits: split.metadata["source"] = filename
+                for split in splits:
+                    split.metadata["source"] = filename
                 full_docs_splits.extend(splits)
-            except Exception as e: print(f"\nНе удалось прочитать файл {filename}: {e}")
-        if not summaries or not full_docs_splits: print("Документы для индексации не найдены."); return
-        print("Создание эмбеддингов для кратких описаний..."); summary_vector_store = Chroma.from_documents(docs=summaries, embedding=embeddings, persist_directory=VECTOR_STORE_SUMMARIES_PATH)
-        print("Создание эмбеддингов для полного текста..."); full_vector_store = Chroma.from_documents(docs=full_docs_splits, embedding=embeddings, persist_directory=VECTOR_STORE_FULL_PATH)
-    print("Векторные базы успешно созданы.")
+
+            except Exception as e:
+                print(f"\nНе удалось обработать файл {filename}: {e}")
+
+        if not summaries or not full_docs_splits:
+            print("Не найдено подходящих документов для индексации.")
+            return
+
+        print("Создание эмбеддингов для кратких описаний...")
+        # ИСПРАВЛЕНО: docs -> documents
+        summary_vector_store = Chroma.from_documents(
+            documents=summaries, 
+            embedding=embeddings, 
+            persist_directory=VECTOR_STORE_SUMMARIES_PATH
+        )
+
+        print("Создание эмбеддингов для полного текста...")
+        # ИСПРАВЛЕНО: docs -> documents
+        full_vector_store = Chroma.from_documents(
+            documents=full_docs_splits, 
+            embedding=embeddings, 
+            persist_directory=VECTOR_STORE_FULL_PATH
+        )
+    print("Векторные базы успешно созданы и готовы к работе.")
 
 @app.route('/')
 def index():
-    """Главная страница, отображающая чат."""
     if 'history' not in session:
         session['history'] = []
         session['state'] = 'INITIAL'
@@ -65,12 +101,10 @@ def index():
 
 @app.route('/download/<path:filename>')
 def download_file(filename):
-    """Маршрут для безопасного скачивания файла."""
     return send_from_directory(DOCUMENTS_FOLDER, filename, as_attachment=True)
 
 @app.route('/ask', methods=['POST'])
 def ask():
-    """API-маршрут для обработки запросов в чате."""
     user_input = request.json.get('question')
     if not user_input:
         return jsonify({"error": "No question provided"}), 400
@@ -80,7 +114,10 @@ def ask():
     state = session.get('state', 'INITIAL')
     ai_response = ""
 
-    if state == 'INITIAL':
+    if not summary_vector_store or not full_vector_store:
+        ai_response = "База данных документов не загружена. Проверьте консоль на наличие ошибок при запуске."
+    
+    elif state == 'INITIAL':
         retriever = summary_vector_store.as_retriever(search_kwargs={"k": 3})
         found_docs = retriever.invoke(user_input)
         doc_filenames = sorted(list(set([doc.metadata['source'] for doc in found_docs])))
@@ -101,7 +138,7 @@ def ask():
         try:
             choice_index = int(user_input.strip()) - 1
             if 0 <= choice_index < len(found_docs): selected_doc_name = found_docs[choice_index]
-        except ValueError:
+        except (ValueError, IndexError):
             for name in found_docs:
                 if user_input.lower().strip() in name.lower(): selected_doc_name = name; break
         
@@ -109,7 +146,7 @@ def ask():
             original_question = session['original_question']
             retriever = full_vector_store.as_retriever(search_kwargs={'filter': {'source': selected_doc_name}})
             
-            final_answer_prompt = ChatTemplate.from_template("""Ты — ассистент-аналитик. Твоя задача — дать точный и исчерпывающий ответ на вопрос пользователя, основываясь ИСКЛЮЧИТЕЛЬНО на предоставленном ниже контексте из документа.
+            final_answer_prompt = ChatPromptTemplate.from_template("""Ты — ассистент-аналитик. Твоя задача — дать точный и исчерпывающий ответ на вопрос пользователя, основываясь ИСКЛЮЧИТЕЛЬНО на предоставленном ниже контексте из документа.
 **Правила ответа:**
 1. Твой ответ должен быть СТРОГО в рамках предоставленного контекста. Не добавляй никакой информации извне.
 2. Если контекст не содержит ответа на вопрос, напиши только: 'В документе "{doc_name}" нет информации по этому вопросу.'
@@ -134,7 +171,7 @@ def ask():
         else:
             ai_response = "Не удалось распознать ваш выбор. Пожалуйста, укажите номер или название документа из списка."
 
-    session['history'].append({'ai': ai_response, 'time': request.json.get('time')}) # Время берем из запроса для синхронизации
+    session['history'].append({'ai': ai_response, 'time': request.json.get('time')})
     session.modified = True
     
     return jsonify({'answer': ai_response})
