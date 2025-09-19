@@ -5,7 +5,7 @@
 		"context": ".."
 	},
 	"forwardPorts": [5000],
-	"postCreateCommand": "pip install -r requirements.txt && ollama pull qwen2:1.5b",
+	"postCreateCommand": "pip install -r requirements.txt && ollama serve & ollama pull mistral:7b-instruct-q4_K_M",
 	"customizations": {
 		"vscode": {
 			"extensions": [
