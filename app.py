@@ -11,7 +11,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 
 app = Flask(__name__)
-app.secret_key = 'two_chats_one_app_secret_final_qwen2_fixed'
+# Увеличиваем максимальный размер cookie на всякий случай, хотя новая логика этого не требует
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.secret_key = 'super_robust_rag_agent_v4'
 
 DOCUMENTS_FOLDER = 'documents'
 VECTOR_STORE_SUMMARIES_PATH = 'vector_store_summaries'
@@ -27,6 +29,7 @@ summary_vector_store = None
 full_vector_store = None
 
 def build_vector_stores():
+    # ... (код build_vector_stores остается без изменений) ...
     global summary_vector_store, full_vector_store
     if os.path.exists(VECTOR_STORE_SUMMARIES_PATH) and os.path.exists(VECTOR_STORE_FULL_PATH):
         print("Загрузка существующих векторных баз...")
@@ -59,6 +62,7 @@ def build_vector_stores():
         print("Создание векторной базы для полного текста..."); full_vector_store = Chroma.from_documents(documents=full_docs_splits, embedding=embeddings, persist_directory=VECTOR_STORE_FULL_PATH)
     print("Векторные базы успешно созданы и готовы к работе.")
 
+
 @app.route('/')
 def rag_chat_page():
     if 'rag_history' not in session:
@@ -71,9 +75,12 @@ def ask_rag():
     session['rag_history'].append({'user': user_input, 'time': request.json.get('time')})
     state = session.get('rag_state', 'INITIAL')
     ai_response = "Произошла непредвиденная ошибка. Состояние сброшено."
+
     def reset_state():
+        keys_to_pop = ['rag_state', 'rag_found_docs', 'rag_original_question', 'rag_selected_doc_name', 'rag_subtopics']
+        for key in keys_to_pop:
+            session.pop(key, None)
         session['rag_state'] = 'INITIAL'
-        session.pop('rag_found_docs', None); session.pop('rag_original_question', None); session.pop('rag_relevant_chunks', None); session.pop('rag_selected_doc_name', None)
 
     if not summary_vector_store or not full_vector_store:
         ai_response = "База данных документов не загружена."
@@ -107,29 +114,49 @@ def ask_rag():
                 reset_state()
             else:
                 context_text = "\n\n".join([chunk.page_content for chunk in relevant_chunks])
-                subtopic_prompt = ChatPromptTemplate.from_template("""Проанализируй следующий текст и вопрос пользователя. Выдели 2-3 основные, самые релевантные ключевые темы или концепции из текста, которые могут помочь ответить на вопрос. Ответь ТОЛЬКО списком тем, разделенных запятой. Пример: Тема 1, Тема 2, Тема 3
-Контекст: {context}
-Вопрос пользователя: {question}""")
-                subtopic_chain = subtopic_prompt | llm
-                
-                # ИСПРАВЛЕНИЕ: Извлекаем .content из ответа модели
-                subtopics_obj = subtopic_chain.invoke({"context": context_text, "question": original_question})
-                subtopics_str = subtopics_obj.content
+                subtopic_prompt = ChatPromptTemplate.from_template("""Твоя задача — помочь пользователю найти информацию в документе. Проанализируй текст и вопрос пользователя. Выдели 3-4 ключевые, осмысленные темы из текста, которые наиболее релевантны вопросу. Темы должны быть короткими и понятными, как заголовки разделов.
 
-                subtopics = [topic.strip() for topic in subtopics_str.split(',')]
-                session.update({'rag_state': 'AWAITING_SUBTOPIC_CONFIRMATION', 'rag_relevant_chunks': [chunk.to_json() for chunk in relevant_chunks], 'rag_selected_doc_name': selected_doc_name})
+**Правила:**
+- Извлекай только самые важные темы.
+- Не выдумывай ничего, чего нет в тексте.
+- Ответь ТОЛЬКО списком тем, разделенных символом новой строки.
+
+**Пример ответа:**
+Согласование нестандартного договора
+Проведение предстрахового осмотра
+Принятие андеррайтингового решения
+
+**Контекст:**
+{context}
+
+**Вопрос пользователя:** {question}""")
+                subtopic_chain = subtopic_prompt | llm
+                subtopics_obj = subtopic_chain.invoke({"context": context_text, "question": original_question})
+                subtopics = [topic.strip() for topic in subtopics_obj.content.split('\n') if topic.strip()]
+                session.update({'rag_state': 'AWAITING_SUBTOPIC_CONFIRMATION', 'rag_selected_doc_name': selected_doc_name, 'rag_subtopics': subtopics})
                 response_lines = [f"Отлично. В документе '{selected_doc_name}' я нашел следующие ключевые темы, связанные с вашим запросом:", ""]
                 for i, topic in enumerate(subtopics): response_lines.append(f"{i+1}. {topic}")
-                response_lines.append("\nКакая тема вас интересует больше всего? Укажите номер.")
+                response_lines.append("\nКакая тема вас интересует больше всего? Укажите номер или название.")
                 ai_response = "\n".join(response_lines)
         else:
             ai_response = "Не удалось распознать ваш выбор. Пожалуйста, попробуйте еще раз."
     elif state == 'AWAITING_SUBTOPIC_CONFIRMATION':
-        relevant_chunks_json = session.get('rag_relevant_chunks', [])
-        relevant_chunks = [Document(**chunk) for chunk in relevant_chunks_json]
-        selected_doc_name = session['rag_selected_doc_name']
-        original_question = session['rag_original_question']
-        final_answer_prompt = ChatPromptTemplate.from_template("""Ты — ассистент-аналитик. Твоя задача — дать точный и исчерпывающий ответ на вопрос пользователя, основываясь ИСКЛЮЧИТЕЛЬНО на предоставленном ниже контексте из документа.
+        subtopics, selected_topic_str = session.get('rag_subtopics', []), None
+        try:
+            choice_index = int(user_input.strip()) - 1
+            if 0 <= choice_index < len(subtopics): selected_topic_str = subtopics[choice_index]
+        except (ValueError, IndexError):
+            for topic in subtopics:
+                if user_input.lower().strip() in topic.lower(): selected_topic_str = topic; break
+        
+        if selected_topic_str:
+            selected_doc_name = session['rag_selected_doc_name']
+            # Используем оригинальный вопрос + выбранную тему для финального, более точного поиска
+            final_query = session['rag_original_question'] + " " + selected_topic_str
+            retriever = full_vector_store.as_retriever(search_kwargs={'k': 5, 'filter': {'source': selected_doc_name}})
+            final_chunks = retriever.invoke(final_query)
+
+            final_answer_prompt = ChatPromptTemplate.from_template("""Ты — ассистент-аналитик. Твоя задача — дать точный и исчерпывающий ответ на вопрос пользователя, основываясь ИСКЛЮЧИТЕЛЬНО на предоставленном ниже контексте из документа.
 **Правила ответа:**
 1. Твой ответ должен быть СТРОГО в рамках предоставленного контекста.
 2. Если контекст не содержит ответа на вопрос, напиши только: 'В документе "{doc_name}" нет информации по этому вопросу.'
@@ -139,16 +166,20 @@ def ask_rag():
 {context}
 ---
 **Вопрос пользователя:** {input}""")
-        answer_chain = create_stuff_documents_chain(llm, final_answer_prompt)
-        response = answer_chain.invoke({"input": original_question, "doc_name": selected_doc_name, "context": relevant_chunks})
-        ai_response = response
-        download_link = url_for('download_file', filename=selected_doc_name)
-        ai_response += f'\n\n[Скачать документ]({download_link})'
-        reset_state()
+            answer_chain = create_stuff_documents_chain(llm, final_answer_prompt)
+            response = answer_chain.invoke({"input": session['rag_original_question'], "doc_name": selected_doc_name, "context": final_chunks})
+            ai_response = response
+            download_link = url_for('download_file', filename=selected_doc_name)
+            ai_response += f'\n\n[Скачать документ]({download_link})'
+            reset_state()
+        else:
+             ai_response = "Не удалось распознать ваш выбор темы. Пожалуйста, укажите номер или название из списка."
 
     session['rag_history'].append({'ai': ai_response, 'time': request.json.get('time')})
     session.modified = True
     return jsonify({'answer': ai_response})
+
+# ... (остальные маршруты /general, /download, /reset, if __name__ == '__main__' остаются без изменений) ...
 
 @app.route('/general')
 def general_chat_page():
@@ -178,7 +209,10 @@ def reset():
         session.pop('general_history', None)
         return redirect(url_for('general_chat_page'))
     else:
-        session.pop('rag_history', None); session.pop('rag_state', None); session.pop('rag_found_docs', None); session.pop('rag_original_question', None); session.pop('rag_relevant_chunks', None); session.pop('rag_selected_doc_name', None)
+        # Сбрасываем состояние RAG чата
+        keys_to_pop = ['rag_history', 'rag_state', 'rag_found_docs', 'rag_original_question', 'rag_selected_doc_name', 'rag_subtopics']
+        for key in keys_to_pop:
+            session.pop(key, None)
         return redirect(url_for('rag_chat_page'))
 
 if __name__ == '__main__':
