@@ -2,54 +2,175 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>{{ title }}</title>
+    <title>Интерактивный RAG Агент</title>
     <style>
-        body { font-family: sans-serif; max-width: 800px; margin: auto; padding: 20px; display: flex; flex-direction: column; height: 90vh; background-color: #f9f9f9; }
-        h1 { text-align: center; color: #333; }
-        nav { text-align: center; margin-bottom: 20px; padding: 10px; background-color: #eee; border-radius: 8px; }
-        nav a { margin: 0 15px; text-decoration: none; color: #007bff; font-weight: bold; font-size: 1.1em; }
-        nav a:hover { text-decoration: underline; }
-        .chat-window { flex-grow: 1; border: 1px solid #ccc; border-radius: 8px; padding: 15px; overflow-y: auto; margin-bottom: 20px; background-color: #fff; }
-        .message { margin-bottom: 15px; padding: 10px 15px; border-radius: 12px; line-height: 1.5; max-width: 80%; }
-        .user-message { background-color: #dcf8c6; text-align: left; margin-left: auto; border-bottom-right-radius: 0; }
-        .ai-message { background-color: #f1f0f0; margin-right: auto; white-space: pre-wrap; border-bottom-left-radius: 0;}
-        .message-container { display: flex; flex-direction: column; }
+        :root { --user-bg: #dcf8c6; --ai-bg: #f1f0f0; --border-color: #ccc; --text-color: #333; --time-color: #888; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 800px; margin: auto; padding: 20px; display: flex; flex-direction: column; height: 95vh; background-color: #f9f9f9; color: var(--text-color); }
+        h1 { text-align: center; color: var(--text-color); }
+        .chat-window { flex-grow: 1; border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; overflow-y: auto; margin-bottom: 20px; background-color: #fff; }
+        .message-container { display: flex; flex-direction: column; margin-bottom: 15px; }
+        .message { padding: 10px 15px; border-radius: 12px; line-height: 1.5; max-width: 85%; word-wrap: break-word; }
+        .user { align-self: flex-end; background-color: var(--user-bg); border-bottom-right-radius: 0; }
+        .ai { align-self: flex-start; background-color: var(--ai-bg); border-bottom-left-radius: 0; }
+        .message-time { font-size: 0.75em; color: var(--time-color); margin-top: 5px; }
+        .user .message-time { text-align: right; }
+        .ai .message-time { text-align: left; }
         .input-form { display: flex; }
-        textarea { flex-grow: 1; padding: 12px; border-radius: 8px; border: 1px solid #ccc; resize: none; font-size: 1em; }
-        button { padding: 12px 22px; margin-left: 10px; border-radius: 8px; border: none; background-color: #007bff; color: white; font-size: 1em; cursor: pointer; }
+        textarea { flex-grow: 1; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color); resize: none; font-size: 1em; }
+        button { padding: 12px 22px; margin-left: 10px; border-radius: 8px; border: none; background-color: #007bff; color: white; font-size: 1em; cursor: pointer; transition: background-color 0.2s; }
         button:hover { background-color: #0056b3; }
+        blockquote { border-left: 3px solid var(--border-color); padding-left: 1em; margin-left: 0; font-style: italic; color: #555; }
+        .typing-indicator { align-self: flex-start; }
+        .typing-indicator span { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: var(--border-color); margin: 0 2px; animation: bounce 1.4s infinite ease-in-out both; }
+        .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1.0); } }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
-
-    <nav>
-        <a href="{{ url_for('rag_chat') }}">Чат по документам (RAG)</a>
-        <a href="{{ url_for('general_chat') }}">Общий чат с AI</a>
-    </nav>
-
-    <h1>{{ title }}</h1>
+    <h1>Интерактивный RAG Агент</h1>
 
     <div class="chat-window" id="chat-window">
         {% for msg in history %}
-            <div class="message-container">
-                <div class="message user-message"><b>Вы:</b><br>{{ msg.user }}</div>
-            </div>
-            <div class="message-container">
-                <div class="message ai-message"><b>ИИ:</b><br>{{ msg.ai }}</div>
-            </div>
+            {% if msg.user %}
+                <div class="message-container">
+                    <div class="message user"><div class="content">{{ msg.user }}</div><div class="message-time">{{ msg.time }}</div></div>
+                </div>
+            {% elif msg.ai %}
+                <div class="message-container">
+                    <div class="message ai"><div class="content">{{ msg.ai | safe }}</div><div class="message-time">{{ msg.time }}</div></div>
+                </div>
+            {% endif %}
         {% endfor %}
     </div>
 
-    <form class="input-form" action="{{ action }}" method="post">
-        <textarea name="question" rows="2" placeholder="Задайте ваш вопрос..." required></textarea>
+    <form class="input-form" id="chat-form">
+        <textarea name="question" id="message-input" rows="1" placeholder="Задайте ваш вопрос..." required></textarea>
         <button type="submit">Отправить</button>
     </form>
 
     <script>
-        // Автоматическая прокрутка чата вниз
         const chatWindow = document.getElementById('chat-window');
-        chatWindow.scrollTop = chatWindow.scrollHeight;
-    </script>
+        const chatForm = document.getElementById('chat-form');
+        const messageInput = document.getElementById('message-input');
 
+        // --- Функция для получения текущего времени в формате HH:MM ---
+        const getCurrentTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        // --- Функция для прокрутки чата вниз ---
+        const scrollToBottom = () => {
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        };
+        
+        // --- Преобразование Markdown в HTML для существующих сообщений ---
+        document.querySelectorAll('.ai .content').forEach(el => {
+            el.innerHTML = marked.parse(el.textContent);
+        });
+        scrollToBottom();
+
+        // --- Динамическая высота поля ввода ---
+        messageInput.addEventListener('input', () => {
+            messageInput.style.height = 'auto';
+            messageInput.style.height = (messageInput.scrollHeight) + 'px';
+        });
+
+        // --- Обработка отправки формы (клик или Enter) ---
+        chatForm.addEventListener('submit', (event) => {
+            event.preventDefault();
+            sendMessage();
+        });
+
+        messageInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // --- Главная функция отправки сообщения ---
+        async function sendMessage() {
+            const userText = messageInput.value.trim();
+            if (!userText) return;
+            
+            const currentTime = getCurrentTime();
+
+            // 1. Мгновенно отображаем сообщение пользователя
+            appendMessage('user', userText, currentTime);
+            messageInput.value = '';
+            messageInput.style.height = 'auto'; // Сбрасываем высоту
+
+            // 2. Показываем индикатор "печатает..."
+            showTypingIndicator();
+
+            // 3. Отправляем запрос на сервер
+            try {
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question: userText, time: currentTime })
+                });
+
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                
+                const data = await response.json();
+
+                // 4. Убираем индикатор и отображаем ответ ИИ
+                hideTypingIndicator();
+                appendMessage('ai', data.answer, getCurrentTime());
+
+            } catch (error) {
+                console.error('Error fetching AI response:', error);
+                hideTypingIndicator();
+                appendMessage('ai', 'Извините, произошла ошибка при обработке вашего запроса.', getCurrentTime());
+            }
+        }
+
+        // --- Вспомогательные функции для обновления интерфейса ---
+        function appendMessage(sender, text, time) {
+            const messageContainer = document.createElement('div');
+            messageContainer.className = 'message-container';
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}`;
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'content';
+            
+            if (sender === 'ai') {
+                contentDiv.innerHTML = marked.parse(text); // Преобразуем Markdown
+            } else {
+                contentDiv.textContent = text;
+            }
+
+            const timeDiv = document.createElement('div');
+            timeDiv.className = 'message-time';
+            timeDiv.textContent = time;
+
+            messageDiv.appendChild(contentDiv);
+            messageDiv.appendChild(timeDiv);
+            messageContainer.appendChild(messageDiv);
+            chatWindow.appendChild(messageContainer);
+            scrollToBottom();
+        }
+
+        function showTypingIndicator() {
+            const indicator = document.createElement('div');
+            indicator.className = 'message-container typing-indicator';
+            indicator.innerHTML = `
+                <div class="message ai">
+                    <span></span><span></span><span></span>
+                </div>`;
+            chatWindow.appendChild(indicator);
+            scrollToBottom();
+        }
+
+        function hideTypingIndicator() {
+            const indicator = chatWindow.querySelector('.typing-indicator');
+            if (indicator) {
+                indicator.remove();
+            }
+        }
+    </script>
 </body>
 </html>
