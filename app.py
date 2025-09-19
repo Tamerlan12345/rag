@@ -1,143 +1,144 @@
 import os
-from flask import Flask, request, render_template, session, redirect, url_for
+from flask import Flask, request, render_template, session, redirect, url_for, send_from_directory, jsonify
 from tqdm import tqdm
 
 from langchain_ollama import ChatOllama
 from langchain_community.embeddings import HuggingFaceEmbeddings
-
 from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import AIMessage
 
 app = Flask(__name__)
-app.secret_key = 'mega_secretka_dlya_dvuh_chatov'
+app.secret_key = 'super_smart_rag_secret_final'
 
+# Оставляем оригинальную папку для документов
 DOCUMENTS_FOLDER = 'documents'
-VECTOR_STORE_PATH = 'vector_store'
+VECTOR_STORE_SUMMARIES_PATH = 'vector_store_summaries'
+VECTOR_STORE_FULL_PATH = 'vector_store_full'
 os.makedirs(DOCUMENTS_FOLDER, exist_ok=True)
 
-# Инициализируем модель один раз для всего приложения
-llm = ChatOllama(model="mistral:7b-instruct-q4_K_M")
-
-print("Инициализация быстрой модели для эмбеддингов...")
+# Инициализируем модель phi3
+llm = ChatOllama(model="phi3:mini")
+print("Инициализация модели для эмбеддингов...")
 embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
 
-vector_store = None
-retrieval_chain = None
+summary_vector_store = None
+full_vector_store = None
 
-def initialize_rag_chain():
-    """Инициализирует цепочку RAG для ответов по документам."""
-    global retrieval_chain
-    
-    prompt_text = """Ты — ассистент, который отвечает на вопросы, используя ТОЛЬКО предоставленный ниже контекст. Если в контексте нет информации для ответа на вопрос, ты ОБЯЗАН ответить только фразой: 'В предоставленных документах нет информации по этому вопросу.' Не используй свои общие знания.
-
-    Контекст:
-    {context}
-
-    Вопрос: {input}
-    """
-    prompt = ChatPromptTemplate.from_template(prompt_text)
-
-    retriever = vector_store.as_retriever()
-    document_chain = create_stuff_documents_chain(llm, prompt)
-    retrieval_chain = create_retrieval_chain(retriever, document_chain)
-    print("Цепочка RAG успешно инициализирована.")
-
-def build_vector_store():
-    """Создает или загружает векторную базу данных."""
-    global vector_store
-    
-    if os.path.exists(VECTOR_STORE_PATH):
-        print("Загрузка существующей векторной базы...")
-        vector_store = Chroma(persist_directory=VECTOR_STORE_PATH, embedding_function=embeddings)
+def build_vector_stores():
+    global summary_vector_store, full_vector_store
+    if os.path.exists(VECTOR_STORE_SUMMARIES_PATH) and os.path.exists(VECTOR_STORE_FULL_PATH):
+        print("Загрузка существующих векторных баз...")
+        summary_vector_store = Chroma(persist_directory=VECTOR_STORE_SUMMARIES_PATH, embedding_function=embeddings)
+        full_vector_store = Chroma(persist_directory=VECTOR_STORE_FULL_PATH, embedding_function=embeddings)
     else:
-        print("Создание новой векторной базы из папки 'documents'...")
-        documents = []
-        
-        file_list = os.listdir(DOCUMENTS_FOLDER)
-        for filename in tqdm(file_list, desc="Чтение документов"):
+        print("Создание новых векторных баз...")
+        summaries, full_docs_splits = [], []
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        for filename in tqdm(os.listdir(DOCUMENTS_FOLDER), desc="Обработка документов"):
             filepath = os.path.join(DOCUMENTS_FOLDER, filename)
             try:
-                if filename.endswith('.pdf'):
-                    loader = PyPDFLoader(filepath)
-                    documents.extend(loader.load())
-                elif filename.endswith('.docx') or filename.endswith('.doc'):
-                    loader = Docx2txtLoader(filepath)
-                    documents.extend(loader.load())
-            except Exception as e:
-                print(f"\nНе удалось прочитать файл {filename}: {e}")
+                if filename.endswith('.pdf'): loader = PyPDFLoader(filepath)
+                elif filename.endswith('.docx') or filename.endswith('.doc'): loader = Docx2txtLoader(filepath)
+                else: continue
+                docs = loader.load()
+                summary_doc = docs[0].copy(); summary_doc.page_content = f"Название документа: {filename}"; summary_doc.metadata = {"source": filename}; summaries.append(summary_doc)
+                splits = text_splitter.split_documents(docs)
+                for split in splits: split.metadata["source"] = filename
+                full_docs_splits.extend(splits)
+            except Exception as e: print(f"\nНе удалось прочитать файл {filename}: {e}")
+        if not summaries or not full_docs_splits: print("Документы для индексации не найдены."); return
+        print("Создание эмбеддингов для кратких описаний..."); summary_vector_store = Chroma.from_documents(docs=summaries, embedding=embeddings, persist_directory=VECTOR_STORE_SUMMARIES_PATH)
+        print("Создание эмбеддингов для полного текста..."); full_vector_store = Chroma.from_documents(docs=full_docs_splits, embedding=embeddings, persist_directory=VECTOR_STORE_FULL_PATH)
+    print("Векторные базы успешно созданы.")
 
-        if not documents:
-            print("Документы для индексации не найдены.")
-            return
+@app.route('/')
+def index():
+    """Главная страница, отображающая чат."""
+    if 'history' not in session:
+        session['history'] = []
+        session['state'] = 'INITIAL'
+    return render_template('index.html', history=session['history'])
 
-        print("Разбиение текста на фрагменты...")
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        splits = text_splitter.split_documents(documents)
-        
-        print("Создание эмбеддингов и сохранение в базу...")
-        vector_store = Chroma.from_documents(
-            documents=splits, 
-            embedding=embeddings, 
-            persist_directory=VECTOR_STORE_PATH
-        )
-        print("Векторная база успешно создана и сохранена.")
+@app.route('/download/<path:filename>')
+def download_file(filename):
+    """Маршрут для безопасного скачивания файла."""
+    return send_from_directory(DOCUMENTS_FOLDER, filename, as_attachment=True)
 
-    if vector_store:
-        initialize_rag_chain()
+@app.route('/ask', methods=['POST'])
+def ask():
+    """API-маршрут для обработки запросов в чате."""
+    user_input = request.json.get('question')
+    if not user_input:
+        return jsonify({"error": "No question provided"}), 400
 
-@app.route('/', methods=['GET', 'POST'])
-def rag_chat():
-    """Маршрут для RAG-чата по документам."""
-    if 'rag_history' not in session:
-        session['rag_history'] = []
-
-    if request.method == 'POST':
-        question = request.form['question']
-        
-        if not retrieval_chain:
-             ai_response = "База документов пуста или не инициализирована. Пожалуйста, добавьте файлы и перезапустите приложение."
-        else:
-            response = retrieval_chain.invoke({"input": question})
-            ai_response = response["answer"]
-
-        session['rag_history'].append({'user': question, 'ai': ai_response})
-        session.modified = True
-        return redirect(url_for('rag_chat'))
-
-    return render_template('index.html', 
-                           history=session['rag_history'], 
-                           title="Чат по документам (RAG)",
-                           action=url_for('rag_chat'))
-
-@app.route('/general', methods=['GET', 'POST'])
-def general_chat():
-    """Маршрут для общего чата с AI."""
-    if 'general_history' not in session:
-        session['general_history'] = []
-
-    if request.method == 'POST':
-        question = request.form['question']
-        
-        # Просто отправляем вопрос в модель
-        response = llm.invoke(question)
-
-        # Убедимся, что ответ - это строка
-        ai_response = response if isinstance(response, str) else response.content
-
-        session['general_history'].append({'user': question, 'ai': ai_response})
-        session.modified = True
-        return redirect(url_for('general_chat'))
+    session['history'].append({'user': user_input, 'time': request.json.get('time')})
     
-    return render_template('index.html', 
-                           history=session['general_history'], 
-                           title="Общий чат с AI",
-                           action=url_for('general_chat'))
+    state = session.get('state', 'INITIAL')
+    ai_response = ""
+
+    if state == 'INITIAL':
+        retriever = summary_vector_store.as_retriever(search_kwargs={"k": 3})
+        found_docs = retriever.invoke(user_input)
+        doc_filenames = sorted(list(set([doc.metadata['source'] for doc in found_docs])))
+        if not doc_filenames:
+            ai_response = "К сожалению, я не нашел подходящих документов по вашему запросу."
+        else:
+            session['state'] = 'AWAITING_CONFIRMATION'
+            session['found_docs'] = doc_filenames
+            session['original_question'] = user_input
+            response_lines = ["Я нашел несколько потенциально подходящих документов. В каком из них мне искать ответ?", ""]
+            for i, name in enumerate(doc_filenames): response_lines.append(f"{i+1}. {name}")
+            response_lines.append("\nПожалуйста, укажите номер или название документа.")
+            ai_response = "\n".join(response_lines)
+    
+    elif state == 'AWAITING_CONFIRMATION':
+        found_docs = session.get('found_docs', [])
+        selected_doc_name = None
+        try:
+            choice_index = int(user_input.strip()) - 1
+            if 0 <= choice_index < len(found_docs): selected_doc_name = found_docs[choice_index]
+        except ValueError:
+            for name in found_docs:
+                if user_input.lower().strip() in name.lower(): selected_doc_name = name; break
+        
+        if selected_doc_name:
+            original_question = session['original_question']
+            retriever = full_vector_store.as_retriever(search_kwargs={'filter': {'source': selected_doc_name}})
+            
+            final_answer_prompt = ChatTemplate.from_template("""Ты — ассистент-аналитик. Твоя задача — дать точный и исчерпывающий ответ на вопрос пользователя, основываясь ИСКЛЮЧИТЕЛЬНО на предоставленном ниже контексте из документа.
+**Правила ответа:**
+1. Твой ответ должен быть СТРОГО в рамках предоставленного контекста. Не добавляй никакой информации извне.
+2. Если контекст не содержит ответа на вопрос, напиши только: 'В документе "{doc_name}" нет информации по этому вопросу.'
+3. Структурируй свой ответ следующим образом:
+**Ответ:** [Здесь твой прямой и краткий ответ на вопрос]
+**Цитата из документа:**
+> [Здесь дословная цитата из контекста, на которой основан твой ответ]
+**Источник:** [Здесь название документа '{doc_name}' и, если возможно, номер пункта или шага из цитаты]
+---
+**Контекст из документа "{doc_name}":**
+{context}
+---
+**Вопрос пользователя:** {input}""")
+            
+            document_chain = create_stuff_documents_chain(llm, final_answer_prompt)
+            chain = create_retrieval_chain(retriever, document_chain)
+            response = chain.invoke({"input": original_question, "doc_name": selected_doc_name})
+            ai_response = response['answer']
+            download_link = url_for('download_file', filename=selected_doc_name)
+            ai_response += f'\n\n[Скачать документ]({download_link})'
+            session['state'] = 'INITIAL'; session.pop('found_docs', None); session.pop('original_question', None)
+        else:
+            ai_response = "Не удалось распознать ваш выбор. Пожалуйста, укажите номер или название документа из списка."
+
+    session['history'].append({'ai': ai_response, 'time': request.json.get('time')}) # Время берем из запроса для синхронизации
+    session.modified = True
+    
+    return jsonify({'answer': ai_response})
 
 if __name__ == '__main__':
-    build_vector_store()
+    build_vector_stores()
     app.run(host='0.0.0', port=5000, debug=True)
