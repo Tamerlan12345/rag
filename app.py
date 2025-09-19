@@ -11,14 +11,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 
 app = Flask(__name__)
-app.secret_key = 'two_chats_one_app_secret_final_qwen2'
+app.secret_key = 'two_chats_one_app_secret_final_qwen2_fixed'
 
 DOCUMENTS_FOLDER = 'documents'
 VECTOR_STORE_SUMMARIES_PATH = 'vector_store_summaries'
 VECTOR_STORE_FULL_PATH = 'vector_store_full'
 os.makedirs(DOCUMENTS_FOLDER, exist_ok=True)
 
-# ИЗМЕНЕНИЕ: Переключаемся на модель qwen2:1.5b
 llm = ChatOllama(model="qwen2:1.5b", timeout=300)
 
 print("Инициализация модели для эмбеддингов...")
@@ -112,7 +111,11 @@ def ask_rag():
 Контекст: {context}
 Вопрос пользователя: {question}""")
                 subtopic_chain = subtopic_prompt | llm
-                subtopics_str = subtopic_chain.invoke({"context": context_text, "question": original_question})
+                
+                # ИСПРАВЛЕНИЕ: Извлекаем .content из ответа модели
+                subtopics_obj = subtopic_chain.invoke({"context": context_text, "question": original_question})
+                subtopics_str = subtopics_obj.content
+
                 subtopics = [topic.strip() for topic in subtopics_str.split(',')]
                 session.update({'rag_state': 'AWAITING_SUBTOPIC_CONFIRMATION', 'rag_relevant_chunks': [chunk.to_json() for chunk in relevant_chunks], 'rag_selected_doc_name': selected_doc_name})
                 response_lines = [f"Отлично. В документе '{selected_doc_name}' я нашел следующие ключевые темы, связанные с вашим запросом:", ""]
